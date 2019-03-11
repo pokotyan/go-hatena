@@ -1,0 +1,27 @@
+service: go-hatena
+
+provider:
+  name: aws
+  runtime: go1.x
+  stage: ${opt:stage, self:custom.defaultStage}
+  profile: ${opt:profile, self:custom.defaultProfile}
+  region: ${opt:region, self:custom.defaultRegion}
+  logRetentionInDays: 3
+  versionFunctions: false
+
+custom:
+  defaultStage: dev
+  defaultProfile: private
+  defaultRegion: ap-northeast-1
+
+package:
+ exclude:
+   - ./**
+ include:
+   - ./bin/**
+
+functions:
+  hatenaScraping:
+    handler: bin/main
+    events:
+      - schedule: cron(0 0 * * ? *)

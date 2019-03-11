@@ -1,0 +1,5 @@
+bin
+.serverless
+go.sum
+.credentials
+
