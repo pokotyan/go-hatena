@@ -8,30 +8,28 @@ import (
 	"os"
 	"time"
 
-	firestore "cloud.google.com/go/firestore"
 	firebase "firebase.google.com/go"
+	db "firebase.google.com/go/db"
 	"github.com/PuerkitoBio/goquery"
-	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
 type HatenaLink struct {
-	date  string
-	users string
-	title string
-	link  string
-	desc  string
+	Users string
+	Title string
+	Link  string
+	Desc  string
 }
 
 type FireBase struct {
 	opt    option.ClientOption
 	ctx    context.Context
 	app    *firebase.App
-	client *firestore.Client
+	client *db.Client
 }
 
-func scraping(date string) HatenaLink {
-	doc, err := goquery.NewDocument("http://b.hatena.ne.jp/hotentry/it/" + date)
+func scraping(category string, date string) HatenaLink {
+	doc, err := goquery.NewDocument("http://b.hatena.ne.jp/hotentry/" + category + "/" + date)
 	if err != nil {
 		fmt.Print("url scarapping failed")
 	}
@@ -40,7 +38,10 @@ func scraping(date string) HatenaLink {
 	title := selection.Text()
 	link, _ := selection.Attr("href")
 	desc := doc.Find("#container > div.wrapper > div > div.entrylist-main > section > div > ul > li > div > div.entrylist-contents-main > div.entrylist-contents-body > a > p.entrylist-contents-description").Text()
-	data := HatenaLink{date, users, title, link, desc}
+
+	data := HatenaLink{Users: users, Title: title, Link: link, Desc: desc}
+
+	time.Sleep(1 * time.Second)
 
 	return data
 }
@@ -48,13 +49,14 @@ func scraping(date string) HatenaLink {
 func initFireBase(keyFileJSON []byte) *FireBase {
 	opt := option.WithCredentialsJSON(keyFileJSON)
 	ctx := context.Background()
-	app, err := firebase.NewApp(ctx, nil, opt)
+	config := &firebase.Config{DatabaseURL: "https://hatena-75088.firebaseio.com/"}
+	app, err := firebase.NewApp(ctx, config, opt)
 
 	if err != nil {
 		fmt.Printf("error initializing app: %v", err)
 	}
 
-	client, err := app.Firestore(ctx)
+	client, err := app.Database(ctx)
 
 	if err != nil {
 		log.Fatalln(err)
@@ -63,37 +65,21 @@ func initFireBase(keyFileJSON []byte) *FireBase {
 	return &FireBase{opt, ctx, app, client}
 }
 
-func (f *FireBase) findOne(date string) (interface{}, error) {
-	iter := f.client.Collection("hatena_link").Where("date", "==", date).Documents(f.ctx)
-	var result interface{}
+func (f *FireBase) isExists(category string, date string) bool {
+	var hl HatenaLink
+	err := f.client.NewRef("hatena/hot-entry").Child(category).Child(date).Get(f.ctx, &hl)
 
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		result = doc.Data()
+	if err != nil {
+		log.Fatalln(err)
 	}
 
-	if result == nil {
-		return nil, nil
+	if hl.Title == "" {
+		return false
 	}
 
-	return result, nil
-}
+	fmt.Printf("%v(%v)のデータはすでに保存ずみ\n", category, date)
+	return true
 
-func (f *FireBase) create(hl HatenaLink) {
-	f.client.Collection("hatena_link").Add(f.ctx, map[string]string{
-		"date":        hl.date,
-		"users_count": hl.users,
-		"title":       hl.title,
-		"link":        hl.link,
-		"desc":        hl.desc,
-	})
 }
 
 func Run() {
@@ -102,24 +88,30 @@ func Run() {
 
 	f := initFireBase(sDec)
 
+	ref := f.client.NewRef("hatena/hot-entry")
+
 	now := time.Now()
-	yesterday := now.AddDate(0, 0, -1)
-	formatedDate := yesterday.Format("20060102")
-	data, err := f.findOne(formatedDate)
+	newestDate := now.AddDate(0, 0, -1)
+	formatedDate := newestDate.Format("20060102")
+	categories := []string{"it", "general", "all"}
 
-	if err != nil {
-		fmt.Printf("データ取得に失敗 err: %s", err)
+	for _, category := range categories {
+		isExists := f.isExists(category, formatedDate)
+
+		if !isExists {
+			fmt.Printf("%v(%v)のデータをスクレイピング、保存します\n", formatedDate, category)
+
+			hl := scraping(category, formatedDate)
+
+			targetRef := ref.Child(category)
+
+			err := targetRef.Child(formatedDate).Set(f.ctx, &hl)
+
+			if err != nil {
+				log.Fatalln("Error setting value:", err)
+			}
+		}
 	}
 
-	if data != nil {
-		fmt.Printf("%vのデータはすでに保存ずみ\n", formatedDate)
-	}
-
-	if data == nil {
-		fmt.Printf("%vのデータをスクレイピング、保存します\n", formatedDate)
-		hl := scraping(formatedDate)
-		f.create(hl)
-	}
-
-	defer f.client.Close()
+	log.Println("Done")
 }
